@@ -95,23 +95,36 @@ async def fetch_covers_parallel(manga_ids: list[str]) -> dict[str, str | None]:
     return dict(results)
 
 
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """
-    Endpoint principal. Recebe a mensagem do usuário e o histórico,
-    roda o agente, retorna as recomendações.
+    Endpoint principal.
     """
-    # Converte o histórico para o formato do agente
+    # Converte o histórico
     history = [{"role": m.role, "content": m.content} for m in req.history]
 
     result = await run_agent(req.message, history)
 
-    # Busca capas em paralelo após a SLM decidir os mangas
+    # Busca capas
     recs = result.get("recommendations", [])
     if recs:
         covers = await fetch_covers_parallel([r["id"] for r in recs])
         for rec in recs:
             rec["cover_url"] = covers.get(rec["id"])
+
+    # === MELHORIA CRÍTICA: Salva contexto no histórico para próximas mensagens ===
+    assistant_content = result.get("message", "Aqui estão as recomendações encontradas.")
+
+    if result.get("search_context"):
+        ctx = result["search_context"]
+        assistant_content += f"\n\n[Contexto da busca: {ctx.get('summary', '')}]"
+
+    # Adiciona ao histórico (o frontend deve salvar isso)
+    result["assistant_message_for_history"] = {
+        "role": "assistant",
+        "content": assistant_content
+    }
 
     return result
 

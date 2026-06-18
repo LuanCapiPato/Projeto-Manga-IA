@@ -140,36 +140,62 @@ def validate_and_fix(result: dict) -> dict:
 
 
 # ── Context summary ────────────────────────────────────────────────────────────
-def build_context_summary(history: list[dict]) -> str | None:
+def build_context_summary(history: list[dict]) -> str:
     if not history:
-        return None
-    user_msgs = [m["content"] for m in history if m["role"] == "user"]
-    if not user_msgs:
-        return None
-    if len(user_msgs) == 1:
-        return f'[Contexto: pedido anterior — "{user_msgs[0]}". Leve em conta na nova busca.]'
-    pedidos = " / ".join(f'"{m}"' for m in user_msgs[-3:])
-    return f'[Contexto: pedidos anteriores — {pedidos}. Considere ao refinar a busca.]'
-
+        return ""
+    
+    user_messages = [m["content"] for m in history if m["role"] == "user"]
+    if not user_messages:
+        return ""
+    
+    context = "=== HISTÓRICO DE PEDIDOS DO USUÁRIO ===\n"
+    for i, msg in enumerate(user_messages[-6:], 1):
+        context += f"{i}. \"{msg}\"\n"
+    
+    return f"""{context}
+INSTRUÇÕES OBRIGATÓRIAS PARA ESTA NOVA MENSAGEM:
+- Você DEVE começar chamando `set_search_context` para atualizar o contexto.
+- Depois chame `search_manga` com critérios refinados (combine histórico + novo pedido).
+- Preserve conceitos abstratos anteriores (dark, psicológico, revenge, trauma, atmosfera, etc.).
+- Só gere o JSON final após ter os resultados da nova busca."""
 
 # ── Agent loop ─────────────────────────────────────────────────────────────────
 async def run_agent(user_message: str, history: list[dict]) -> dict:
     global current_search_context, real_manga_index
+    
     current_search_context = None
-    real_manga_index = {}       # ← limpa a cada requisição
-
+    real_manga_index = {}
+    
     log_section("NOVA REQUISIÇÃO")
     log(BLUE, "USER", user_message)
+    
+    print(f"\n[DEBUG] Tamanho do history recebido: {len(history)}")
+    for i, msg in enumerate(history):
+        role = msg.get("role")
+        content = msg.get("content", "")[:150] + "..." if len(str(msg.get("content",""))) > 150 else msg.get("content","")
+        print(f"  {i} | {role:>10} | {content}")
+    
+    ctx_summary = build_context_summary(history)
+    if ctx_summary:
+        log(MAGENTA, "CTX", ctx_summary[:600] + "..." if len(ctx_summary) > 600 else ctx_summary)
 
-    ctx = build_context_summary(history)
-    if ctx:
-        log(MAGENTA, "CTX", ctx)
-
+    # Monta as mensagens com contexto forte
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history)
-    if ctx:
-        messages.append({"role": "system", "content": ctx})
+
+    if history:
+        messages.extend(history)
+
+    if ctx_summary:
+        messages.append({"role": "system", "content": ctx_summary})
+
     messages.append({"role": "user", "content": user_message})
+
+    # === PARTE 3: Reforço extra de contexto abstrato ===
+    if len(history) >= 2:
+        messages.append({
+            "role": "system", 
+            "content": "Lembre-se: preserve conceitos abstratos do histórico (tom, tema emocional, intensidade, estilo narrativo, vibe). Não perca a essência da conversa anterior. Refine mantendo o que já foi pedido."
+        })
 
     max_iterations = 7
     iteration = 0
@@ -231,15 +257,19 @@ async def run_agent(user_message: str, history: list[dict]) -> dict:
                 # Após search_manga — injeta prompt de seleção UMA vez
                 if tc.function.name == "search_manga" and not selection_injected:
                     selection_injected = True
-                    ids_sample = list(real_manga_index.keys())[:5]
-                    hint = (
-                        f"\n\nIMPORTANTE: Os IDs reais dos mangas retornados têm este formato: "
-                        f"{ids_sample}. "
-                        f"Use SOMENTE esses IDs no campo 'id' das recomendações."
-                    )
-                    messages.append({"role": "user", "content": SELECTION_PROMPT + hint})
-                    log(CYAN, "CTX", f"Prompt de seleção injetado com {len(real_manga_index)} IDs disponíveis")
+                    ids_sample = list(real_manga_index.keys())[:8]  # mais exemplos
+                    
+                    full_selection_prompt = SELECTION_PROMPT + f"""
 
+                HISTÓRICO DE CRITÉRIOS:
+                {current_search_context.get('summary', '') if current_search_context else ''}
+                {current_search_context.get('criteria', '') if current_search_context else ''}
+
+                IMPORTANTE: Use SOMENTE estes IDs: {ids_sample}...
+                Seja fiel ao contexto acima ao escolher."""
+                    
+                    messages.append({"role": "user", "content": full_selection_prompt})
+                    log(CYAN, "CTX", f"Prompt de seleção injetado com {len(real_manga_index)} mangas")
         # ── Sem tool calls — tenta parsear resposta final ─────────────────────
         else:
             content = msg.content or ""
@@ -266,6 +296,8 @@ async def run_agent(user_message: str, history: list[dict]) -> dict:
                     result = json.loads(json_str)
                     if result.get("recommendations") is not None:
                         result = validate_and_fix(result)
+                        if current_search_context:
+                            result["search_context"] = current_search_context
                         n = len(result["recommendations"])
                         total_time = time.time() - t_total
                         log(GREEN, "SLM", f"Resposta final [{elapsed:.1f}s]")
