@@ -92,7 +92,4 @@ manga-recommender/
 - **Backend**: Python + FastAPI + httpx
 - **Frontend**: React + Vite
 - **API**: MangaDex API v5 (pública, sem autenticação)
-# Projeto-Manga-IA
-# Projeto-Manga-IA
-# Projeto-Manga-IA
-# Projeto-Manga-IA
+
